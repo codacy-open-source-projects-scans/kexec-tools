@@ -18,6 +18,7 @@ KEXEC_SRCS_base += kexec/kexec-elf-core.c
 KEXEC_SRCS_base += kexec/kexec-elf-rel.c
 KEXEC_SRCS_base += kexec/kexec-elf-boot.c
 KEXEC_SRCS_base += kexec/kexec-pe-zboot.c
+KEXEC_SRCS_base += kexec/kexec-uki.c
 KEXEC_SRCS_base += kexec/kexec-iomem.c
 KEXEC_SRCS_base += kexec/firmware_memmap.c
 KEXEC_SRCS_base += kexec/crashdump.c
@@ -25,6 +26,7 @@ KEXEC_SRCS_base += kexec/crashdump-xen.c
 KEXEC_SRCS_base += kexec/phys_arch.c
 KEXEC_SRCS_base += kexec/lzma.c
 KEXEC_SRCS_base += kexec/zlib.c
+KEXEC_SRCS_base += kexec/zstd.c
 KEXEC_SRCS_base += kexec/kexec-xen.c
 KEXEC_SRCS_base += kexec/symbols.c
 
@@ -35,7 +37,8 @@ dist += kexec/Makefile						\
 	kexec/crashdump.h kexec/firmware_memmap.h		\
 	kexec/kexec-elf-boot.h					\
 	kexec/kexec-elf.h kexec/kexec-sha256.h			\
-	kexec/kexec-zlib.h kexec/kexec-lzma.h			\
+	kexec/kexec-zlib.h kexec/kexec-lzma.h                   \
+	kexec/kexec-zstd.h                                      \
 	kexec/kexec-xen.h 					\
 	kexec/kexec-syscall.h kexec/kexec.h kexec/kexec.8
 

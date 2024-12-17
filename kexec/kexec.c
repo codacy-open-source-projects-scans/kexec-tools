@@ -55,6 +55,7 @@
 #include "kexec-sha256.h"
 #include "kexec-zlib.h"
 #include "kexec-lzma.h"
+#include "kexec-zstd.h"
 #include <arch/options.h>
 
 #define KEXEC_LOADED_PATH "/sys/kernel/kexec_loaded"
@@ -67,6 +68,8 @@ int do_hotplug = 0;
 static unsigned long kexec_flags = 0;
 /* Flags for kexec file (fd) based syscall */
 static unsigned long kexec_file_flags = 0;
+/* initrd detected in probe phase */
+int implicit_initrd_fd = -1;
 int kexec_debug = 0;
 
 void dbgprint_mem_range(const char *prefix, struct memory_range *mr, int nr_mr)
@@ -637,9 +640,12 @@ char *slurp_decompress_file(const char *filename, off_t *r_size)
 
 	kernel_buf = zlib_decompress_file(filename, r_size);
 	if (!kernel_buf) {
-		kernel_buf = lzma_decompress_file(filename, r_size);
-		if (!kernel_buf)
-			return slurp_file(filename, r_size);
+	        kernel_buf = zstd_decompress_file(filename, r_size);
+		if (!kernel_buf) {
+                        kernel_buf = lzma_decompress_file(filename, r_size);
+			if (!kernel_buf)
+				return slurp_file(filename, r_size);
+		}
 	}
 	return kernel_buf;
 }

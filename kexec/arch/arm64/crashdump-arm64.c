@@ -1,6 +1,6 @@
 /*
  * ARM64 crashdump.
- *     partly derived from arm implementation
+ *     partly derived from                                    arm implementation
  *
  * Copyright (c) 2014-2017 Linaro Limited
  * Author: AKASHI Takahiro <takahiro.akashi@linaro.org>
@@ -63,10 +63,22 @@ static int iomem_range_callback(void *UNUSED(data), int UNUSED(nr),
 				char *str, unsigned long long base,
 				unsigned long long length)
 {
-	if (strncmp(str, CRASH_KERNEL, strlen(CRASH_KERNEL)) == 0)
+	int i;
+
+	if (strncmp(str, CRASH_KERNEL, strlen(CRASH_KERNEL)) == 0) {
+		/*
+		 * Checks whether the area exists in crash_reserved_mem.
+		 */
+		for (i = 0; i < usablemem_rgns.max_size; i++) {
+			if (usablemem_rgns.ranges[i].start == base) {
+				fprintf(stderr, "Warning, the range already exists in usablemem_rgns, base=%llx, length=%llx\n",
+						base, length);
+				return 0;
+			}
+		}
 		return mem_regions_alloc_and_add(&usablemem_rgns,
 						base, length, RANGE_RAM);
-	else if (strncmp(str, SYSTEM_RAM, strlen(SYSTEM_RAM)) == 0)
+	} else if (strncmp(str, SYSTEM_RAM, strlen(SYSTEM_RAM)) == 0)
 		return mem_regions_alloc_and_add(&system_memory_rgns,
 						base, length, RANGE_RAM);
 	else if (strncmp(str, KERNEL_CODE, strlen(KERNEL_CODE)) == 0) {
