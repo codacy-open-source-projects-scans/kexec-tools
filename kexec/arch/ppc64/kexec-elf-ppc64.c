@@ -40,6 +40,10 @@
 #include <libfdt.h>
 #include <arch/fdt.h>
 #include <arch/options.h>
+#include <dirent.h>
+#include <assert.h>
+#include <linux/limits.h>
+#include <stdbool.h>
 
 uint64_t initrd_base, initrd_size;
 unsigned char reuse_initrd = 0;
@@ -178,6 +182,247 @@ out:
 	if (cmdline_len == 1)
 		free(cmdline);
 	return ret;
+}
+
+static int read_proc_file(char* filename, char* buf) {
+	FILE* f;
+	int len;
+
+	f = fopen(filename, "r");
+	if (f == NULL) {
+		perror("unable to open file");
+	}
+	len = fread(buf, 1, 10, f);
+	fclose(f);
+
+	return len;
+}
+
+
+static void add_reserve_mem(void* dtb, uint64_t where, uint64_t length)
+{
+	int ret;
+
+	ret = fdt_add_mem_rsv(dtb, where, length);
+	assert(ret == 0 && "Failed to add memory reservation block to FDT.");
+
+	return;
+}
+
+/* this function is similar to kexec/fs2dt.c's checkprop function, only part
+ * different here is, this version uses libfdt's function to mark the reserve
+ * section
+ */
+static void checkprop(void* dtb, char *name, unsigned *data, int len)
+{
+	static unsigned long long base, size, end;
+
+	if ((data == NULL) && (base || size || end))
+		die("unrecoverable error: no property data");
+	else if (!strcmp(name, "linux,rtas-base"))
+		base = be32_to_cpu(*data);
+	else if (!strcmp(name, "opal-base-address"))
+		base = be64_to_cpu(*(unsigned long long *)data);
+	else if (!strcmp(name, "opal-runtime-size"))
+		size = be64_to_cpu(*(unsigned long long *)data);
+	else if (!strcmp(name, "linux,tce-base"))
+		base = be64_to_cpu(*(unsigned long long *) data);
+	else if (!strcmp(name, "rtas-size") ||
+			!strcmp(name, "linux,tce-size"))
+		size = be32_to_cpu(*data);
+	else if (reuse_initrd && !strcmp(name, "linux,initrd-start")) {
+		if (len == 8)
+			base = be64_to_cpu(*(unsigned long long *) data);
+		else
+			base = be32_to_cpu(*data);
+	} else if (reuse_initrd && !strcmp(name, "linux,initrd-end")) {
+		if (len == 8)
+			end = be64_to_cpu(*(unsigned long long *) data);
+		else
+			end = be32_to_cpu(*data);
+	}
+
+	if (size && end)
+		die("unrecoverable error: size and end set at same time\n");
+	if (base && size) {
+		add_reserve_mem(dtb, base, size);
+		base = size = 0;
+	}
+	if (base && end) {
+		add_reserve_mem(dtb, base, end-base);
+		base = end = 0;
+	}
+}
+
+static void file_traversal(void *dtb, const char *pathname) {
+	DIR *dir = opendir(pathname);
+	if (!dir) {
+		perror("opendir failed");
+		return;
+	}
+
+	struct dirent *entry;
+	while ((entry = readdir(dir)) != NULL) {
+		// Skip '.' and '..'
+		if (entry->d_name[0] == '.')
+			continue;
+
+		char full_path[PATH_MAX];
+		snprintf(full_path, sizeof(full_path), "%s/%s", pathname, entry->d_name);
+
+		// Check if entry is a directory
+		if (entry->d_type == DT_DIR) {
+			file_traversal(dtb, full_path);
+		} else {
+			char file_data[10];
+			int readlen = read_proc_file(full_path, file_data);
+			if (readlen > 0) {
+				checkprop(dtb, entry->d_name,
+					(unsigned *)file_data, readlen);
+			}
+		}
+	}
+
+	closedir(dir);
+}
+
+void patch_devicetree_with_initrd_info(char* dtb, uint64_t initrd_base,
+		uint64_t initrd_size) {
+
+	int ret, offset;
+	unsigned long initrd_end = initrd_base + initrd_size;
+	uint64_t base_be = cpu_to_be64(initrd_base);
+	uint64_t end_be  = cpu_to_be64(initrd_end);
+
+	ret = 0;
+	offset = fdt_path_offset(dtb, "/chosen");
+	assert(offset >= 0 && "failed to find the /chosen node");
+
+	ret = fdt_setprop(dtb, offset, "linux,initrd-start", &base_be, sizeof(base_be));
+	assert(ret == 0 && "failed to set initrd-start on dtb");
+
+	ret = fdt_setprop(dtb, offset, "linux,initrd-end", &end_be, sizeof(end_be));
+	assert(ret == 0 && "failed to set initrd-end on dtb");
+
+}
+
+int find_logical_cpu_from_physical(int physical_cpu) {
+
+	char possible_buffer[0x2f];
+	char physical_id_buffer[0x2f];
+	char physical_id_filename_buffer[0x5f];
+	char online_filename_buffer[0x5f];
+	char online_buffer[0x1f];
+	FILE *possible_file, *online_file;
+	FILE *physical_id_file;
+	int pc;
+	int is_online;
+	int first_cpu, last_cpu;
+
+	possible_file = fopen("/sys/devices/system/cpu/possible", "r");
+	fread(possible_buffer, 0x2f, 1, possible_file);
+	fclose(possible_file);
+	sscanf(possible_buffer, "%d-%d", &first_cpu, &last_cpu);
+
+	for (int lc = first_cpu; lc <= last_cpu; lc++) {
+		sprintf(online_filename_buffer,
+				"/sys/devices/system/cpu/cpu%d/online", lc);
+		online_file = fopen(online_filename_buffer, "r");
+		fread(online_buffer, 0xf, 1, online_file);
+		fclose(online_file);
+		sscanf(online_buffer, "%d", &is_online);
+
+		if (!is_online)
+			continue;
+
+		sprintf(physical_id_filename_buffer,
+				"/sys/devices/system/cpu/cpu%d/physical_id", lc);
+		physical_id_file = fopen(physical_id_filename_buffer, "r");
+		fread(physical_id_buffer, 0x2f, 1, physical_id_file);
+		fclose(physical_id_file);
+		sscanf(physical_id_buffer, "%d", &pc);
+
+		if (pc == physical_cpu)
+			return lc;
+	}
+
+	return -1;
+}
+
+static void set_valid_bootcpu(const void* dtb) {
+	int node = -1;
+	int len;
+	int nthreads;
+	const struct fdt_property *intserv;
+	__be32* intserv_data;
+	int i;
+	char cmd_buffer[0x5f];
+	int boot_cpuid;
+	bool found = false;
+
+	while ((node = fdt_next_node(dtb, node, NULL)) >= 0) {
+		intserv = fdt_get_property(dtb, node, "ibm,ppc-interrupt-server#s",
+				&len);
+		if (!intserv) continue;
+		intserv_data = (__be32*)intserv->data;
+		nthreads = len / sizeof(int);
+		for (i = 0; i < nthreads; i++) {
+			boot_cpuid = be32_to_cpu(intserv_data[i]);
+			int logical_cpu = find_logical_cpu_from_physical(boot_cpuid);
+			if (logical_cpu < 0)
+				continue;
+			sprintf(cmd_buffer, "echo %d >  /sys/kernel/reboot/cpu",
+					logical_cpu);
+			system(cmd_buffer);
+			printf("setting boot cpu: %d (physical_id: %d)\n",
+					logical_cpu, boot_cpuid);
+			found = true;
+			break;
+		}
+		if (found)
+			break;
+	}
+
+	if (!found) {
+		die("can't find a valid boot_cpu inside the FDT.\n");
+	}
+
+}
+
+static void patch_devicetree(char *dtb, uint64_t initrd_base,
+		uint64_t initrd_size)
+{
+	int ret;
+
+	patch_devicetree_with_initrd_info(dtb, initrd_base, initrd_size);
+
+	file_traversal(dtb, "/proc/device-tree");
+
+	ret = fdt_add_mem_rsv(dtb, initrd_base, initrd_size);
+	assert(ret == 0 && "failed to add rsvmap");
+
+	ret = fdt_add_mem_rsv(dtb, 0, fdt_totalsize(dtb));
+	assert(ret == 0 && "failed to add rsvmap");
+
+	fdt_set_boot_cpuid_phys(dtb, 0x0);
+	fdt_set_last_comp_version(dtb, 17);
+
+
+	set_valid_bootcpu(dtb);
+
+}
+
+static char* alloc_new_dtb(char* dtb, off_t* newsize) {
+	int ret;
+
+	*newsize = fdt_totalsize(dtb) + 256;
+	dtb = (char*) realloc(dtb, *newsize);
+	ret = fdt_open_into(dtb, dtb, *newsize);
+
+	assert(ret == 0 &&
+		"fdt_open_into failed");
+
+	return dtb;
 }
 
 int elf_ppc64_load(int argc, char **argv, const char *buf, off_t len,
@@ -321,15 +566,16 @@ int elf_ppc64_load(int argc, char **argv, const char *buf, off_t len,
 	elf_rel_build_load(info, &info->rhdr, purgatory,
 				purgatory_size, 0, max_addr, 1, 0);
 
+	if (ramdisk && devicetreeblob && (info->kexec_flags & KEXEC_ON_CRASH)) {
+		fprintf(stderr,
+		"Can't use ramdisk with device tree blob input in kdump\n");
+		return -1;
+	}
+
 	/* Add a ram-disk to the current image
 	 * Note: Add the ramdisk after elf_rel_build_load
 	 */
 	if (ramdisk) {
-		if (devicetreeblob) {
-			fprintf(stderr,
-			"Can't use ramdisk with device tree blob input\n");
-			return -1;
-		}
 		seg_buf = slurp_file(ramdisk, &seg_size);
 		hole_addr = add_buffer(info, seg_buf, seg_size, seg_size,
 			0, 0, max_addr, 1);
@@ -340,6 +586,12 @@ int elf_ppc64_load(int argc, char **argv, const char *buf, off_t len,
 	if (devicetreeblob) {
 		/* Grab device tree from buffer */
 		seg_buf = slurp_file(devicetreeblob, &seg_size);
+
+		if (ramdisk) {
+			seg_buf = alloc_new_dtb(seg_buf, &seg_size);
+			patch_devicetree(seg_buf, initrd_base, initrd_size);
+		}
+
 	} else {
 		/* create from fs2dt */
 		create_flatten_tree(&seg_buf, &seg_size, cmdline);

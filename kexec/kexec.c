@@ -1518,6 +1518,7 @@ int main(int argc, char *argv[])
 			return 0;
 		case OPT_DEBUG:
 			kexec_debug = 1;
+			kexec_flags |= KEXEC_DEBUG;
 			kexec_file_flags |= KEXEC_FILE_DEBUG;
 			break;
 		case OPT_NOIFDOWN:
@@ -1758,6 +1759,7 @@ int main(int argc, char *argv[])
 		}
 		if (!do_kexec_file_syscall)
 			result = k_unload(kexec_flags);
+		arch_do_unload();
 	}
 	if (do_load && (result == 0)) {
 		if (do_kexec_file_syscall) {
