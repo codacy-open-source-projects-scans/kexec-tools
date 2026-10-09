@@ -32,6 +32,7 @@ struct riscv_opts {
 /* crashdump-riscv.c */
 extern struct memory_range elfcorehdr_mem;
 int load_elfcorehdr(struct kexec_info *info);
+int get_crash_kernel_ranges(struct memory_range **ranges, int *nr_ranges);
 
 /* kexec-riscv.c */
 int prepare_kexec_file_options(struct kexec_info *info);
@@ -50,4 +51,10 @@ int elf_riscv_load(int argc, char **argv, const char *buf, off_t len,
 int image_riscv_probe(const char *buf, off_t len);
 void image_riscv_usage(void);
 int image_riscv_load(int argc, char **argv, const char *buf, off_t len,
+		   struct kexec_info *info);
+
+/* kexec-vmlinuz-riscv.c */
+int pez_riscv_probe(const char *buf, off_t len);
+void pez_riscv_usage(void);
+int pez_riscv_load(int argc, char **argv, const char *buf, off_t len,
 		   struct kexec_info *info);

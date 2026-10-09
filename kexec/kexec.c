@@ -60,6 +60,7 @@
 
 #define KEXEC_LOADED_PATH "/sys/kernel/kexec_loaded"
 #define KEXEC_CRASH_LOADED_PATH "/sys/kernel/kexec_crash_loaded"
+#define KEXEC_CRASH_SIZE_PATH "/sys/kernel/kexec_crash_size"
 
 unsigned long long mem_min = 0;
 unsigned long long mem_max = ULONG_MAX;
@@ -1102,6 +1103,9 @@ void usage(void)
 	       " --hotplug            Do in-kernel update of kexec segments on CPU/Memory\n"
 	       "                      hot add/remove events, avoiding the need to reload\n"
 	       "                      kdump kernel on online/offline events.\n"
+	       " --no-cma             Don't use CMA for placing kexec payloads.\n"
+	       " --force-dtb          Carry over the current boot's device tree blob (x86\n"
+	       "                      only, this is forced on ARM64 and PPC).\n"
 	       " -d, --debug          Enable debugging to help spot a failure.\n"
 	       " -S, --status         Return 1 if the type (by default crash) is loaded,\n"
 	       "                      0 if not.\n"
@@ -1322,6 +1326,8 @@ static int do_kexec_file_load(int fileind, int argc, char **argv,
 	int ret = 0;
 	char *kernel_buf;
 	off_t kernel_size;
+	struct stat kernel_stat;
+	off_t kernel_file_size = -1;
 
 	memset(&info, 0, sizeof(info));
 	info.segment = NULL;
@@ -1345,17 +1351,39 @@ static int do_kexec_file_load(int fileind, int argc, char **argv,
 
 	kernel = argv[fileind];
 
-	/* slurp in the input kernel */
+       /* Hold original fd with its xattrs */
+	kernel_fd = open(kernel, O_RDONLY);
+	if (kernel_fd == -1) {
+		fprintf(stderr, "Failed to open file %s:%s\n", kernel,
+				strerror(errno));
+		return EFAILED;
+	}
+
+	/* Compressed vs Uncompressed */
+	if (fstat(kernel_fd, &kernel_stat) == 0)
+		kernel_file_size = kernel_stat.st_size;
+
+        /* slurp in the input kernel */
 	kernel_buf = slurp_decompress_file(kernel, &kernel_size);
 	if (!kernel_buf) {
 		fprintf(stderr, "Failed to decompress file %s:%s\n", kernel,
 				strerror(errno));
+		close(kernel_fd);
 		return EFAILED;
 	}
-	kernel_fd = copybuf_memfd(kernel_buf, kernel_size);
-	if (kernel_fd < 0) {
-		fprintf(stderr, "Failed to copy decompressed buf\n");
-		return EFAILED;
+
+	if (kernel_file_size != kernel_size) {
+		close(kernel_fd);
+		kernel_fd = copybuf_memfd(kernel_buf, kernel_size);
+		if (kernel_fd < 0) {
+			fprintf(stderr, "Failed to copy decompressed buf\n");
+			return EFAILED;
+		}
+		dbgprintf("%s: compressed input, using memfd kernel fd %d\n",
+			  __func__, kernel_fd);
+	} else {
+		dbgprintf("%s: using original kernel file fd %d\n",
+			  __func__, kernel_fd);
 	}
 
 	for (i = 0; i < file_types; i++) {
@@ -1378,11 +1406,15 @@ static int do_kexec_file_load(int fileind, int argc, char **argv,
 	}
 
        /*
-	* image type specific load functioin detect the capsule kernel type
+	* image type specific load function detect the capsule kernel type
 	* and create another fd for file load. For example the zboot kernel.
 	*/
-	if (info.kernel_fd != -1)
+	if (info.kernel_fd != -1) {
+		dbgprintf("%s: using image-specific kernel fd %d\n",
+			  __func__, info.kernel_fd);
+		close(kernel_fd);
 		kernel_fd = info.kernel_fd;
+	}
 
 	/*
 	 * If there is no initramfs, set KEXEC_FILE_NO_INITRAMFS flag so that
@@ -1391,6 +1423,7 @@ static int do_kexec_file_load(int fileind, int argc, char **argv,
 	if (info.initrd_fd == -1)
 		info.kexec_flags |= KEXEC_FILE_NO_INITRAMFS;
 
+	dbgprintf("kexec_file_load: flags = 0x%lx\n", info.kexec_flags);
 	ret = kexec_file_load(kernel_fd, info.initrd_fd, info.command_line_len,
 			info.command_line, info.kexec_flags);
 	if (ret != 0) {
@@ -1463,14 +1496,30 @@ static inline unsigned long get_hotplug_kexec_flag(void)
 static void print_crashkernel_region_size(void)
 {
 	uint64_t start = 0, end = 0;
+	uint64_t size = 0;
+	FILE *fp;
 
-	if (is_crashkernel_mem_reserved() &&
-	    get_crash_kernel_load_range(&start, &end)) {
-		fprintf(stderr, "get_crash_kernel_load_range() failed.\n");
-		return;
+	fp = fopen(KEXEC_CRASH_SIZE_PATH, "r");
+	if (fp) {
+		if (fscanf(fp, "%" SCNu64, &size) == 1) {
+			fclose(fp);
+			printf("%" PRIu64 "\n", size);
+			return;
+		}
+		fclose(fp);
 	}
 
-	printf("%" PRIu64 "\n", (start != end) ? (end - start + 1) : 0UL);
+	if (is_crashkernel_mem_reserved()) {
+		if (get_crash_kernel_load_range(&start, &end)) {
+			fprintf(stderr, "get_crash_kernel_load_range() failed.\n");
+			return;
+		}
+
+		if (start != end)
+			size = end - start + 1;
+	}
+
+	printf("%" PRIu64 "\n", size);
 }
 
 int main(int argc, char *argv[])
@@ -1646,6 +1695,12 @@ int main(int argc, char *argv[])
 			return 0;
 		case OPT_HOTPLUG:
 			do_hotplug = 1;
+			break;
+		case OPT_NO_CMA:
+			kexec_file_flags |= KEXEC_FILE_NO_CMA;
+			break;
+		case OPT_FORCE_DTB:
+			kexec_file_flags |= KEXEC_FILE_FORCE_DTB;
 			break;
 		default:
 			break;

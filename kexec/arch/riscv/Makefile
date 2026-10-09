@@ -4,6 +4,7 @@
 riscv_KEXEC_SRCS = kexec/arch/riscv/crashdump-riscv.c
 riscv_KEXEC_SRCS += kexec/arch/riscv/kexec-elf-riscv.c
 riscv_KEXEC_SRCS += kexec/arch/riscv/kexec-image-riscv.c
+riscv_KEXEC_SRCS += kexec/arch/riscv/kexec-vmlinuz-riscv.c
 riscv_KEXEC_SRCS += kexec/arch/riscv/kexec-riscv.c
 
 riscv_DT_OPS += kexec/dt-ops.c
@@ -13,6 +14,8 @@ riscv_MEM_REGIONS = kexec/mem_regions.c
 riscv_ARCH_REUSE_INITRD =
 
 riscv_CPPFLAGS += -I $(srcdir)/kexec/
+
+riscv_PHYS_TO_VIRT =
 
 dist += $(riscv_KEXEC_SRCS)				\
 	kexec/arch/riscv/image-header.h			\

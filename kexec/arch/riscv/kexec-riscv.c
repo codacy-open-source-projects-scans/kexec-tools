@@ -34,6 +34,7 @@ const struct arch_map_entry arches[] = {
 struct file_type file_type[] = {
 	{"elf-riscv", elf_riscv_probe, elf_riscv_load, elf_riscv_usage},
 	{"image-riscv", image_riscv_probe, image_riscv_load, image_riscv_usage},
+	{"vmlinuz-riscv", pez_riscv_probe, pez_riscv_load, pez_riscv_usage},
 };
 int file_types = sizeof(file_type) / sizeof(file_type[0]);
 
@@ -110,6 +111,8 @@ int load_extra_segments(struct kexec_info *info, uint64_t kernel_base,
 			uint64_t kernel_size, uint64_t max_addr)
 {
 	struct fdt_image *fdt = arch_options.fdt;
+	struct memory_range *crash_ranges = NULL;
+	struct memory_range *usable_ranges = NULL;
 	char *initrd_buf = NULL;
 	off_t initrd_size = 0;
 	uint64_t initrd_base = 0;
@@ -117,7 +120,10 @@ int load_extra_segments(struct kexec_info *info, uint64_t kernel_base,
 	uint64_t end = 0;
 	uint64_t min_usable = kernel_base + kernel_size;
 	uint64_t max_usable = max_addr;
+	int nr_crash_ranges = 0;
+	int nr_usable_ranges = 0;
 	int ret = 0;
+	int i;
 
 	/* Prepare the device tree */
 	if (info->kexec_flags & KEXEC_ON_CRASH) {
@@ -141,8 +147,34 @@ int load_extra_segments(struct kexec_info *info, uint64_t kernel_base,
 			return ret;
 		}
 
-		ret = dtb_add_range_property(&fdt->buf, &fdt->size, start, end,
-					     "chosen", "linux,usable-memory-range");
+		ret = get_crash_kernel_ranges(&crash_ranges,
+					      &nr_crash_ranges);
+		if (ret) {
+			fprintf(stderr, "Couldn't get crashkernel regions\n");
+			return ret;
+		}
+
+		usable_ranges = xmalloc(nr_crash_ranges *
+					sizeof(*usable_ranges));
+		usable_ranges[nr_usable_ranges].start = start;
+		usable_ranges[nr_usable_ranges].end = end;
+		usable_ranges[nr_usable_ranges].type = RANGE_RAM;
+		nr_usable_ranges++;
+
+		for (i = 0; i < nr_crash_ranges; i++) {
+			if (crash_ranges[i].start == start &&
+			    crash_ranges[i].end == end)
+				continue;
+
+			usable_ranges[nr_usable_ranges++] = crash_ranges[i];
+		}
+
+		ret = dtb_add_range_properties(&fdt->buf, &fdt->size,
+					       usable_ranges,
+					       nr_usable_ranges,
+					       "chosen",
+					       "linux,usable-memory-range");
+		free(usable_ranges);
 		if (ret) {
 			fprintf(stderr, "Couldn't add usable-memory-range to fdt\n");
 			return ret;
@@ -417,12 +449,10 @@ static bool to_be_excluded(char *str, unsigned long long start, unsigned long lo
 		return true;
 	}
 
-	if (!strncmp(str, SYSTEM_RAM, strlen(SYSTEM_RAM)) ||
-	    !strncmp(str, KERNEL_CODE, strlen(KERNEL_CODE)) ||
-	    !strncmp(str, KERNEL_DATA, strlen(KERNEL_DATA)))
-		return false;
-	else
+	if (!strncmp(str, IOMEM_RESERVED, strlen(IOMEM_RESERVED)))
 		return true;
+
+	return false;
 }
 
 int get_memory_ranges(struct memory_range **range, int *num_ranges,
